@@ -1,0 +1,27 @@
+name: ytd_gui
+description: A Flutter GUI for yt-dlp — download YouTube audio as M4A.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+  shared_preferences: ^2.3.3
+  path_provider: ^2.1.5
+  file_picker: ^8.1.7
+  url_launcher: ^6.3.1
+  http: ^1.2.2
+  path: ^1.9.1
+  archive: ^3.6.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
