@@ -62,14 +62,14 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
     final settings = settingsAsync.valueOrNull;
     final outputDir = settings?.downloadDir ?? '.';
 
-    // Resolve playlist vs single
-    final urls = await _resolveUrls(url, updateService.ytdlpPath);
+    // Resolve entries (url + title) for playlist or single video
+    final entries = await _resolveEntries(url, updateService.ytdlpPath);
 
-    final newItems = urls.map((u) {
+    final newItems = entries.map((e) {
       return DownloadItem(
-        id: '${DateTime.now().microsecondsSinceEpoch}_${u.hashCode}',
-        url: u,
-        title: _guessTitle(u),
+        id: '${DateTime.now().microsecondsSinceEpoch}_${e.url.hashCode}',
+        url: e.url,
+        title: e.title,
       );
     }).toList();
 
@@ -136,31 +136,58 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
     state = state.where((i) => !i.isTerminal).toList();
   }
 
-  Future<List<String>> _resolveUrls(String url, String ytdlpExe) async {
-    // Check if it looks like a playlist URL
-    if (!url.contains('playlist') && !url.contains('list=')) {
-      return [url];
+  /// Resolves a URL into one or more (url, title) pairs.
+  /// For playlists, expands every entry. For single videos, fetches the title.
+  Future<List<({String url, String title})>> _resolveEntries(
+      String url, String ytdlpExe) async {
+    final isPlaylist =
+        url.contains('playlist') || url.contains('list=');
+
+    if (isPlaylist) {
+      try {
+        // Print "title<TAB>url" for every entry in the playlist
+        final result = await Process.run(ytdlpExe, [
+          '--flat-playlist',
+          '--print', '%(title)s\t%(url)s',
+          '--no-warnings',
+          url,
+        ]);
+        final lines = (result.stdout as String)
+            .split('\n')
+            .map((l) => l.trim())
+            .where((l) => l.isNotEmpty);
+        final entries = <({String url, String title})>[];
+        for (final line in lines) {
+          final tab = line.indexOf('\t');
+          if (tab == -1) continue;
+          final title = line.substring(0, tab).trim();
+          final entryUrl = line.substring(tab + 1).trim();
+          if (entryUrl.startsWith('http')) {
+            entries.add((url: entryUrl, title: title));
+          }
+        }
+        if (entries.isNotEmpty) return entries;
+      } catch (_) {/* fall through */}
+      return [(url: url, title: 'Playlist')];
     }
+
+    // Single video — fetch the title quickly
     try {
       final result = await Process.run(ytdlpExe, [
-        '--flat-playlist',
-        '--print', 'url',
+        '--print', 'title',
         '--no-warnings',
+        '--no-download',
         url,
       ]);
-      final lines = (result.stdout as String)
-          .split('\n')
-          .map((l) => l.trim())
-          .where((l) => l.isNotEmpty && l.startsWith('http'))
-          .toList();
-      return lines.isEmpty ? [url] : lines;
-    } catch (_) {
-      return [url];
-    }
-  }
+      final title = (result.stdout as String).trim();
+      if (title.isNotEmpty) {
+        return [(url: url, title: title)];
+      }
+    } catch (_) {/* fall through */}
 
-  String _guessTitle(String url) {
-    // Will be overwritten once yt-dlp runs; just a placeholder
-    return Uri.parse(url).queryParameters['v'] ?? url;
+    // Fallback: use the video ID as a temporary placeholder
+    final fallback =
+        Uri.parse(url).queryParameters['v'] ?? url;
+    return [(url: url, title: fallback)];
   }
 }
