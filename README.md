@@ -27,7 +27,7 @@ A clean, dark-themed Windows desktop app for downloading YouTube and YouTube Mus
 
 ## Screenshots
 
-> *(Coming soon)*
+![YTD GUI](screenshots/screenshot.png)
 
 ---
 
