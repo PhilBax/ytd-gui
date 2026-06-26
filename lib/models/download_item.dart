@@ -1,4 +1,4 @@
-enum DownloadStatus { queued, downloading, converting, done, failed }
+enum DownloadStatus { queued, downloading, converting, normalizing, done, failed }
 
 class DownloadItem {
   final String id;

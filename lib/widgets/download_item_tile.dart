@@ -65,14 +65,17 @@ class DownloadItemTile extends ConsumerWidget {
               ],
             ),
             if (item.status == DownloadStatus.downloading ||
-                item.status == DownloadStatus.converting) ...[
+                item.status == DownloadStatus.converting ||
+                item.status == DownloadStatus.normalizing) ...[
               const SizedBox(height: 8),
               ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(
                   value: item.status == DownloadStatus.converting
                       ? null
-                      : item.progress,
+                      : item.status == DownloadStatus.normalizing
+                          ? item.progress
+                          : item.progress,
                   backgroundColor:
                       Theme.of(context).colorScheme.surface.withAlpha(100),
                   color: color,
@@ -95,6 +98,16 @@ class DownloadItemTile extends ConsumerWidget {
                     style: TextStyle(fontSize: 11, color: color),
                   ),
                 ),
+              if (item.status == DownloadStatus.normalizing)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    item.progress < 0.5
+                        ? 'Measuring peak volume…'
+                        : 'Normalizing and converting…',
+                    style: TextStyle(fontSize: 11, color: color),
+                  ),
+                ),
             ],
           ],
         ),
@@ -110,6 +123,7 @@ class DownloadItemTile extends ConsumerWidget {
         return Theme.of(context).colorScheme.error;
       case DownloadStatus.downloading:
       case DownloadStatus.converting:
+      case DownloadStatus.normalizing:
         return Theme.of(context).colorScheme.primary;
       case DownloadStatus.queued:
         return const Color(0xFF757575);
@@ -136,6 +150,7 @@ class _StatusIcon extends StatelessWidget {
           ),
         );
       case DownloadStatus.converting:
+      case DownloadStatus.normalizing:
         return Icon(Icons.sync,
             size: 20, color: Theme.of(context).colorScheme.primary);
       case DownloadStatus.done:

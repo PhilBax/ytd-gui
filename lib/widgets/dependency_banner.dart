@@ -1,11 +1,14 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/download_provider.dart';
 import '../services/update_service.dart';
 
 final _depStateProvider =
     StateNotifierProvider<_DepNotifier, _DepState>((ref) {
-  return _DepNotifier(ref.read(updateServiceProvider));
+  final svc = ref.read(updateServiceProvider);
+  final settings = ref.read(settingsProvider).valueOrNull;
+  return _DepNotifier(svc, settings?.ffmpegOverride ?? '');
 });
 
 enum _DepPhase { checking, downloading, ready, error }
@@ -18,40 +21,58 @@ class _DepState {
 
 class _DepNotifier extends StateNotifier<_DepState> {
   final UpdateService _svc;
-  _DepNotifier(this._svc) : super(_DepState(_DepPhase.checking, 'Checking dependencies…')) {
+  final String _ffmpegOverride;
+
+  _DepNotifier(this._svc, this._ffmpegOverride)
+      : super(_DepState(_DepPhase.checking, 'Checking dependencies…')) {
     _check();
   }
 
   Future<void> _check() async {
     final ytOk = File(_svc.ytdlpPath).existsSync();
-    final ffOk = File(_svc.ffmpegPath).existsSync();
+
+    // Check ffmpeg by running it — works whether it's on PATH or a custom path
+    final ffmpegExe = _ffmpegOverride.isNotEmpty ? _ffmpegOverride : 'ffmpeg';
+    final ffOk = await _isFfmpegRunnable(ffmpegExe);
 
     if (ytOk && ffOk) {
       state = _DepState(_DepPhase.ready, '');
       return;
     }
 
-    state = _DepState(_DepPhase.downloading,
-        '${!ytOk ? 'yt-dlp' : ''}${!ytOk && !ffOk ? ' & ' : ''}${!ffOk ? 'ffmpeg' : ''} not found — downloading…');
+    if (!ffOk && ytOk) {
+      state = _DepState(_DepPhase.error,
+          'ffmpeg not found. Install it and ensure it\'s on your PATH, or set a custom path in Settings.');
+      return;
+    }
 
-    if (!ytOk) {
-      final ok = await _svc.ensureYtdlp();
-      if (!ok) {
-        state = _DepState(_DepPhase.error, 'Failed to download yt-dlp. Check your internet connection.');
-        return;
-      }
+    // yt-dlp missing — auto-download it
+    state = _DepState(_DepPhase.downloading, 'yt-dlp not found — downloading…');
+
+    final ytDownloaded = await _svc.ensureYtdlp();
+    if (!ytDownloaded) {
+      state = _DepState(_DepPhase.error,
+          'Failed to download yt-dlp. Check your internet connection.');
+      return;
     }
 
     if (!ffOk) {
-      state = _DepState(_DepPhase.downloading, 'Downloading ffmpeg (this may take a minute)…');
-      final ok = await _svc.ensureFfmpeg();
-      if (!ok) {
-        state = _DepState(_DepPhase.error, 'Failed to download ffmpeg. You may need to install it manually.');
-        return;
-      }
+      state = _DepState(_DepPhase.error,
+          'ffmpeg not found. Install it and ensure it\'s on your PATH, or set a custom path in Settings.');
+      return;
     }
 
     state = _DepState(_DepPhase.ready, '');
+  }
+
+  Future<bool> _isFfmpegRunnable(String exe) async {
+    try {
+      final result = await Process.run(exe, ['-version'])
+          .timeout(const Duration(seconds: 5));
+      return result.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
   }
 }
 

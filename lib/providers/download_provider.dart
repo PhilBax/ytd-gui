@@ -14,25 +14,72 @@ final settingsProvider =
 
 class AppSettings {
   final String downloadDir;
-  AppSettings({required this.downloadDir});
+  final bool normalize;
+  final double normalizeLufs;
+  final String ffmpegOverride; // empty = use PATH
+
+  AppSettings({
+    required this.downloadDir,
+    this.normalize = false,
+    this.normalizeLufs = -14.0,
+    this.ffmpegOverride = '',
+  });
+
+  AppSettings copyWith({
+    String? downloadDir,
+    bool? normalize,
+    double? normalizeLufs,
+    String? ffmpegOverride,
+  }) =>
+      AppSettings(
+        downloadDir: downloadDir ?? this.downloadDir,
+        normalize: normalize ?? this.normalize,
+        normalizeLufs: normalizeLufs ?? this.normalizeLufs,
+        ffmpegOverride: ffmpegOverride ?? this.ffmpegOverride,
+      );
 }
 
 class SettingsNotifier extends AsyncNotifier<AppSettings> {
   static const _keyDir = 'download_dir';
+  static const _keyNormalize = 'normalize';
+  static const _keyNormalizeLufs = 'normalize_lufs';
+  static const _keyFfmpegOverride = 'ffmpeg_override';
 
   @override
   Future<AppSettings> build() async {
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString(_keyDir);
-    if (saved != null) return AppSettings(downloadDir: saved);
-    final dl = await getDownloadsDirectory();
-    return AppSettings(downloadDir: dl?.path ?? '.');
+    final dir = saved ?? (await getDownloadsDirectory())?.path ?? '.';
+    return AppSettings(
+      downloadDir: dir,
+      normalize: prefs.getBool(_keyNormalize) ?? false,
+      normalizeLufs: prefs.getDouble(_keyNormalizeLufs) ?? -14.0,
+      ffmpegOverride: prefs.getString(_keyFfmpegOverride) ?? '',
+    );
   }
 
   Future<void> setDownloadDir(String path) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyDir, path);
-    state = AsyncData(AppSettings(downloadDir: path));
+    state = AsyncData(state.value!.copyWith(downloadDir: path));
+  }
+
+  Future<void> setNormalize(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyNormalize, value);
+    state = AsyncData(state.value!.copyWith(normalize: value));
+  }
+
+  Future<void> setNormalizeLufs(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_keyNormalizeLufs, value);
+    state = AsyncData(state.value!.copyWith(normalizeLufs: value));
+  }
+
+  Future<void> setFfmpegOverride(String value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyFfmpegOverride, value);
+    state = AsyncData(state.value!.copyWith(ffmpegOverride: value));
   }
 }
 
@@ -97,6 +144,9 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
       await downloadService.downloadItem(
         item: current,
         outputDir: outputDir,
+        normalize: settings?.normalize ?? false,
+        normalizeLufs: settings?.normalizeLufs ?? -14.0,
+        ffmpegOverride: settings?.ffmpegOverride ?? '',
         onUpdate: (updated) {
           _update(updated);
         },
@@ -125,9 +175,13 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
     ));
 
     final updated = state.firstWhere((i) => i.id == itemId);
+    final settings2 = ref.read(settingsProvider).valueOrNull;
     await downloadService.downloadItem(
       item: updated,
       outputDir: outputDir,
+      normalize: settings2?.normalize ?? false,
+      normalizeLufs: settings2?.normalizeLufs ?? -14.0,
+      ffmpegOverride: settings2?.ffmpegOverride ?? '',
       onUpdate: _update,
     );
   }

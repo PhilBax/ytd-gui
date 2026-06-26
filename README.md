@@ -18,8 +18,9 @@ A clean, dark-themed Windows desktop app for downloading YouTube and YouTube Mus
 - **Open in browser** — jump straight to the YouTube page for any item in your list
 - **Show in folder** — opens Windows Explorer with the downloaded file selected
 - **Detailed log viewer** — view raw yt-dlp output per track to diagnose errors; copy to clipboard in one click
+- **Loudness normalization** — optional LUFS-based normalization (two-pass, linear gain) so every track plays back at a consistent perceived volume; target defaults to -14 LUFS (Spotify/YouTube standard) and is configurable in Settings
 - **Persistent download folder** — remembers your chosen folder between sessions; defaults to your Downloads folder
-- **Auto-downloads dependencies** — fetches `yt-dlp.exe` and `ffmpeg.exe` on first launch if they aren't present
+- **ffmpeg path configuration** — set a custom path to `ffmpeg.exe` in Settings, or leave it blank to use whatever is on your PATH; no auto-download required
 - **yt-dlp update notifications** — checks for a newer yt-dlp release on startup and offers to update in one click
 
 ---
@@ -37,9 +38,10 @@ A clean, dark-themed Windows desktop app for downloading YouTube and YouTube Mus
 1. Download the latest release ZIP from the [Releases](../../releases) page
 2. Extract the folder anywhere you like
 3. Run `ytd_gui.exe`
-4. On first launch the app will automatically download `yt-dlp.exe` and `ffmpeg.exe` into the same folder — an internet connection is required for this one-time setup
+4. On first launch the app will automatically download `yt-dlp.exe` if it isn't present
+5. Make sure [ffmpeg](https://ffmpeg.org/download.html) is installed and on your PATH, or set a custom path in **Settings → Dependencies**
 
-That's it. No Python, no PATH changes, nothing else to install.
+That's it. No Python required.
 
 ### Option B — Build from source
 
@@ -73,20 +75,22 @@ YTD GUI
 │   └── Playlist URL → expands all tracks, fetches all titles, queues each one
 │
 ├── Per-track download
-│   ├── yt-dlp downloads the best audio stream
-│   ├── ffmpeg remuxes/converts to M4A
+│   ├── yt-dlp downloads the best audio stream in its native format
+│   ├── ffmpeg converts to M4A (256k AAC)
+│   ├── [optional] Pass 1 — measure integrated loudness (LUFS)
+│   ├── [optional] Pass 2 — re-encode with linear gain applied to hit target LUFS
 │   └── File is named after the video title automatically
 │
-└── Dependencies (stored alongside the .exe)
+└── Dependencies
     ├── yt-dlp.exe  — auto-downloaded from GitHub on first run
-    └── ffmpeg.exe  — auto-downloaded from BtbN's FFmpeg builds on first run
+    └── ffmpeg      — use system install (PATH) or set a custom path in Settings
 ```
 
 ---
 
 ## Distributing to Another PC
 
-Copy the entire `Release\` folder (not just the `.exe`). It contains the Flutter runtime DLLs the app needs. On first launch on the new machine it will download yt-dlp and ffmpeg automatically.
+Copy the entire `Release\` folder (not just the `.exe`). It contains the Flutter runtime DLLs the app needs. On first launch on the new machine it will download yt-dlp automatically. ffmpeg must be installed separately or configured via Settings.
 
 ---
 
