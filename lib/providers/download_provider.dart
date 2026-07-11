@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import '../models/download_item.dart';
 import '../services/download_service.dart';
 import '../services/update_service.dart';
@@ -103,11 +104,7 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
   }
 
   Future<void> enqueue(String url) async {
-    final downloadService = ref.read(downloadServiceProvider);
     final updateService = ref.read(updateServiceProvider);
-    final settingsAsync = ref.read(settingsProvider);
-    final settings = settingsAsync.valueOrNull;
-    final outputDir = settings?.downloadDir ?? '.';
 
     // Resolve entries (url + title) for playlist or single video
     final entries = await _resolveEntries(url, updateService.ytdlpPath);
@@ -119,6 +116,28 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
         title: e.title,
       );
     }).toList();
+
+    await _processQueue(newItems);
+  }
+
+  Future<void> enqueueLocalFiles(List<String> paths) async {
+    final newItems = paths.map((path) {
+      return DownloadItem(
+        id: '${DateTime.now().microsecondsSinceEpoch}_${path.hashCode}',
+        url: path,
+        title: p.basenameWithoutExtension(path),
+        isLocal: true,
+      );
+    }).toList();
+
+    await _processQueue(newItems);
+  }
+
+  Future<void> _processQueue(List<DownloadItem> newItems) async {
+    final downloadService = ref.read(downloadServiceProvider);
+    final settingsAsync = ref.read(settingsProvider);
+    final settings = settingsAsync.valueOrNull;
+    final outputDir = settings?.downloadDir ?? '.';
 
     state = [...state, ...newItems];
 

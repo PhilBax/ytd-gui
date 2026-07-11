@@ -27,71 +27,81 @@ class DownloadService {
     double normalizeLufs = -14.0,
     String ffmpegOverride = '',
   }) async {
-    final ytdlp = _updateService.ytdlpPath;
     // Use the user-specified path if set, otherwise rely on PATH
     final ffmpeg = ffmpegOverride.isNotEmpty ? ffmpegOverride : 'ffmpeg';
 
-    if (!File(ytdlp).existsSync()) {
-      _fail(item, 'yt-dlp not found. Please restart the app to download it.', onUpdate);
-      return;
-    }
+    String nativeFile;
 
-    // Download best audio in native format — we handle conversion ourselves
-    final outputTemplate = p.join(outputDir, '%(title)s.%(ext)s');
-    final args = [
-      '--no-playlist',
-      '-f', 'bestaudio',
-      if (ffmpegOverride.isNotEmpty) ...['--ffmpeg-location', p.dirname(ffmpeg)],
-      '--output', outputTemplate,
-      '--newline',
-      '--progress',
-      item.url,
-    ];
-
-    item.logBuffer.writeln('> $ytdlp ${args.join(' ')}\n');
-    onUpdate(item.copyWith(status: DownloadStatus.downloading, progress: 0.0));
-
-    String? downloadedPath;
-
-    try {
-      final process = await Process.start(ytdlp, args);
-
-      process.stdout.transform(const SystemEncoding().decoder).listen((chunk) {
-        item.logBuffer.write(chunk);
-        for (final line in chunk.split('\n')) {
-          final progress = _progressRe.firstMatch(line);
-          if (progress != null) {
-            final pct = double.tryParse(progress.group(1)!) ?? 0;
-            onUpdate(item.copyWith(
-              status: DownloadStatus.downloading,
-              progress: pct / 100.0,
-            ));
-          }
-          final dest = _destinationRe.firstMatch(line);
-          if (dest != null) downloadedPath = dest.group(1)!.trim();
-        }
-      });
-
-      process.stderr
-          .transform(const SystemEncoding().decoder)
-          .listen((chunk) => item.logBuffer.write(chunk));
-
-      final exitCode = await process.exitCode;
-      if (exitCode != 0) {
-        _fail(item, 'yt-dlp exited with code $exitCode', onUpdate);
+    if (item.isLocal) {
+      if (!File(item.url).existsSync()) {
+        _fail(item, 'File not found: ${item.url}', onUpdate);
         return;
       }
-    } catch (e) {
-      _fail(item, e.toString(), onUpdate);
-      return;
-    }
+      nativeFile = item.url;
+    } else {
+      final ytdlp = _updateService.ytdlpPath;
 
-    // Fall back to finding the newest audio file if yt-dlp didn't print a path
-    final String nativeFile =
-        downloadedPath ?? _findLatestAudio(outputDir) ?? '';
-    if (nativeFile.isEmpty || !File(nativeFile).existsSync()) {
-      _fail(item, 'Could not locate downloaded file', onUpdate);
-      return;
+      if (!File(ytdlp).existsSync()) {
+        _fail(item, 'yt-dlp not found. Please restart the app to download it.', onUpdate);
+        return;
+      }
+
+      // Download best audio in native format — we handle conversion ourselves
+      final outputTemplate = p.join(outputDir, '%(title)s.%(ext)s');
+      final args = [
+        '--no-playlist',
+        '-f', 'bestaudio',
+        if (ffmpegOverride.isNotEmpty) ...['--ffmpeg-location', p.dirname(ffmpeg)],
+        '--output', outputTemplate,
+        '--newline',
+        '--progress',
+        item.url,
+      ];
+
+      item.logBuffer.writeln('> $ytdlp ${args.join(' ')}\n');
+      onUpdate(item.copyWith(status: DownloadStatus.downloading, progress: 0.0));
+
+      String? downloadedPath;
+
+      try {
+        final process = await Process.start(ytdlp, args);
+
+        process.stdout.transform(const SystemEncoding().decoder).listen((chunk) {
+          item.logBuffer.write(chunk);
+          for (final line in chunk.split('\n')) {
+            final progress = _progressRe.firstMatch(line);
+            if (progress != null) {
+              final pct = double.tryParse(progress.group(1)!) ?? 0;
+              onUpdate(item.copyWith(
+                status: DownloadStatus.downloading,
+                progress: pct / 100.0,
+              ));
+            }
+            final dest = _destinationRe.firstMatch(line);
+            if (dest != null) downloadedPath = dest.group(1)!.trim();
+          }
+        });
+
+        process.stderr
+            .transform(const SystemEncoding().decoder)
+            .listen((chunk) => item.logBuffer.write(chunk));
+
+        final exitCode = await process.exitCode;
+        if (exitCode != 0) {
+          _fail(item, 'yt-dlp exited with code $exitCode', onUpdate);
+          return;
+        }
+      } catch (e) {
+        _fail(item, e.toString(), onUpdate);
+        return;
+      }
+
+      // Fall back to finding the newest audio file if yt-dlp didn't print a path
+      nativeFile = downloadedPath ?? _findLatestAudio(outputDir) ?? '';
+      if (nativeFile.isEmpty || !File(nativeFile).existsSync()) {
+        _fail(item, 'Could not locate downloaded file', onUpdate);
+        return;
+      }
     }
 
     final baseName = p.basenameWithoutExtension(nativeFile);
@@ -194,8 +204,9 @@ class DownloadService {
       }
     }
 
-    // Clean up the native file after successful conversion
-    if (nativeFile != m4aPath) {
+    // Clean up the native file after successful conversion (never delete
+    // the user's own local source file)
+    if (!item.isLocal && nativeFile != m4aPath) {
       try { File(nativeFile).deleteSync(); } catch (_) {}
     }
 

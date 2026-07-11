@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
 import '../providers/download_provider.dart';
+
+const _mediaExtensions = [
+  'mp3', 'm4a', 'wav', 'flac', 'ogg', 'opus', 'aac', 'wma',
+  'mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'wmv', 'm4v',
+];
 
 class UrlInputBar extends ConsumerStatefulWidget {
   const UrlInputBar({super.key});
@@ -30,6 +36,24 @@ class _UrlInputBarState extends ConsumerState<UrlInputBar> {
     }
   }
 
+  Future<void> _pickLocalFiles() async {
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Select audio or video files',
+      allowMultiple: true,
+      type: FileType.custom,
+      allowedExtensions: _mediaExtensions,
+    );
+    final paths = result?.files
+        .map((f) => f.path)
+        .whereType<String>()
+        .toList();
+    if (paths == null || paths.isEmpty) return;
+
+    setState(() => _loading = true);
+    await ref.read(downloadsProvider.notifier).enqueueLocalFiles(paths);
+    if (mounted) setState(() => _loading = false);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Row(
@@ -39,7 +63,7 @@ class _UrlInputBarState extends ConsumerState<UrlInputBar> {
             controller: _controller,
             enabled: !_loading,
             decoration: InputDecoration(
-              hintText: 'Paste a YouTube or YouTube Music URL…',
+              hintText: 'Enter YouTube link or select local files…',
               prefixIcon: const Icon(Icons.link),
               suffixIcon: IconButton(
                 icon: const Icon(Icons.content_paste),
@@ -49,6 +73,12 @@ class _UrlInputBarState extends ConsumerState<UrlInputBar> {
             ),
             onSubmitted: (_) => _submit(),
           ),
+        ),
+        const SizedBox(width: 12),
+        OutlinedButton.icon(
+          onPressed: _loading ? null : _pickLocalFiles,
+          icon: const Icon(Icons.folder_open, size: 18),
+          label: const Text('Browse'),
         ),
         const SizedBox(width: 12),
         _loading

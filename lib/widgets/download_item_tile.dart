@@ -184,12 +184,13 @@ class _ActionButtons extends ConsumerWidget {
             onPressed: () =>
                 ref.read(downloadsProvider.notifier).retry(item.id),
           ),
-        IconButton(
-          icon: const Icon(Icons.open_in_browser, size: 18),
-          tooltip: 'Open in browser',
-          onPressed: () => launchUrl(Uri.parse(item.url),
-              mode: LaunchMode.externalApplication),
-        ),
+        if (!item.isLocal)
+          IconButton(
+            icon: const Icon(Icons.open_in_browser, size: 18),
+            tooltip: 'Open in browser',
+            onPressed: () => launchUrl(Uri.parse(item.url),
+                mode: LaunchMode.externalApplication),
+          ),
         IconButton(
           icon: const Icon(Icons.terminal, size: 18),
           tooltip: 'View log',

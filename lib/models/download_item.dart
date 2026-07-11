@@ -3,6 +3,7 @@ enum DownloadStatus { queued, downloading, converting, normalizing, done, failed
 class DownloadItem {
   final String id;
   final String url;
+  final bool isLocal;
   String title;
   DownloadStatus status;
   double progress; // 0.0 – 1.0
@@ -14,6 +15,7 @@ class DownloadItem {
   DownloadItem({
     required this.id,
     required this.url,
+    this.isLocal = false,
     this.title = '',
     this.status = DownloadStatus.queued,
     this.progress = 0.0,
@@ -33,6 +35,7 @@ class DownloadItem {
     final copy = DownloadItem(
       id: id,
       url: url,
+      isLocal: isLocal,
       title: title ?? this.title,
       status: status ?? this.status,
       progress: progress ?? this.progress,
