@@ -156,8 +156,12 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
         break;
       }
 
-      final current =
-          state.firstWhere((i) => i.id == item.id, orElse: () => item);
+      final current = state.firstWhere(
+        (i) => i.id == item.id,
+        // Item was removed from the queue (e.g. via clearQueued) — treat
+        // it as not-queued so it gets skipped below.
+        orElse: () => item.copyWith(status: DownloadStatus.failed),
+      );
       if (current.status != DownloadStatus.queued) continue;
 
       await downloadService.downloadItem(
@@ -207,6 +211,12 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
 
   void clear() {
     state = state.where((i) => !i.isTerminal).toList();
+  }
+
+  /// Removes items that haven't started processing yet. Leaves the item
+  /// currently downloading/converting/normalizing (if any) alone.
+  void clearQueued() {
+    state = state.where((i) => i.status != DownloadStatus.queued).toList();
   }
 
   /// Resolves a URL into one or more (url, title) pairs.

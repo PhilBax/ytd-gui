@@ -138,12 +138,8 @@ class DownloadService {
 
       // Parse the JSON fields ffmpeg emits
       double? measuredI = _jsonDouble(pass1Json, 'input_i');
-      double? measuredLra = _jsonDouble(pass1Json, 'input_lra');
-      double? measuredTp = _jsonDouble(pass1Json, 'input_tp');
-      double? measuredThresh = _jsonDouble(pass1Json, 'input_thresh');
 
-      if (measuredI == null || measuredLra == null ||
-          measuredTp == null || measuredThresh == null) {
+      if (measuredI == null) {
         _fail(item, 'Failed to parse loudnorm measurement values', onUpdate);
         return;
       }
@@ -151,21 +147,21 @@ class DownloadService {
       item.logBuffer.writeln(
           '[normalize] measured I=$measuredI LUFS  target=$normalizeLufs LUFS');
 
-      // Pass 2: convert to m4a applying the measured loudnorm in linear mode
-      item.logBuffer.writeln('[normalize] Pass 2: converting to m4a with loudnorm...');
+      // Pass 2: apply a single linear gain to hit the target loudness,
+      // then a transparent limiter that only catches the rare peak that
+      // would otherwise clip. This avoids loudnorm's own "dynamic" mode,
+      // which falls back to a continuous compander (and audibly pumps/
+      // distorts) whenever linear gain would exceed its true-peak ceiling.
+      final gainDb = (normalizeLufs - measuredI).toStringAsFixed(2);
+      item.logBuffer.writeln('[normalize] Pass 2: applying ${gainDb}dB gain...');
       onUpdate(item.copyWith(status: DownloadStatus.normalizing, progress: 0.5));
-      final applyFilter =
-          'loudnorm=I=$normalizeLufs'
-          ':measured_I=$measuredI'
-          ':measured_LRA=$measuredLra'
-          ':measured_TP=$measuredTp'
-          ':measured_thresh=$measuredThresh'
-          ':linear=true';
+      final applyFilter = 'volume=${gainDb}dB,alimiter=limit=-1dB:level=false';
       try {
         final pass2 = await Process.run(ffmpeg, [
           '-i', nativeFile,
           '-vn',
           '-af', applyFilter,
+          '-ac', '2',
           '-c:a', 'aac',
           '-b:a', '256k',
           '-y',
@@ -188,6 +184,7 @@ class DownloadService {
         final result = await Process.run(ffmpeg, [
           '-i', nativeFile,
           '-vn',
+          '-ac', '2',
           '-c:a', 'aac',
           '-b:a', '256k',
           '-y',

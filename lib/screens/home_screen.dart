@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/download_item.dart';
 import '../providers/download_provider.dart';
 import '../widgets/url_input_bar.dart';
 import '../widgets/folder_picker_row.dart';
@@ -24,6 +25,7 @@ class HomeScreen extends ConsumerWidget {
           ],
         ),
         actions: [
+          _ClearQueueButton(),
           _ClearButton(),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
@@ -212,6 +214,20 @@ class _ClearButton extends ConsumerWidget {
       onPressed: () => ref.read(downloadsProvider.notifier).clear(),
       icon: const Icon(Icons.clear_all, size: 18),
       label: const Text('Clear finished'),
+    );
+  }
+}
+
+class _ClearQueueButton extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(downloadsProvider);
+    final hasQueued = items.any((i) => i.status == DownloadStatus.queued);
+    if (!hasQueued) return const SizedBox.shrink();
+    return TextButton.icon(
+      onPressed: () => ref.read(downloadsProvider.notifier).clearQueued(),
+      icon: const Icon(Icons.playlist_remove, size: 18),
+      label: const Text('Clear queue'),
     );
   }
 }
