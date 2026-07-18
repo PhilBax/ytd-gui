@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import '../models/download_item.dart';
@@ -10,23 +11,50 @@ final downloadServiceProvider = Provider((ref) {
   return DownloadService(updateService);
 });
 
+/// Lets a caller cancel the process (if any) currently running on behalf
+/// of a [DownloadService.downloadItem] call.
+class CancelToken {
+  Process? _process;
+  bool cancelled = false;
+
+  void _attach(Process process) {
+    _process = process;
+    // Cancel arrived before this process was attached — kill it immediately.
+    if (cancelled) process.kill();
+  }
+
+  void cancel() {
+    cancelled = true;
+    _process?.kill();
+  }
+}
+
 class DownloadService {
   final UpdateService _updateService;
   DownloadService(this._updateService);
 
   static final _progressRe = RegExp(r'\[download\]\s+([\d.]+)%');
-  static final _destinationRe = RegExp(r'\[download\] Destination: (.+)');
   // Captures the JSON block loudnorm prints after analysis
   static final _loudnormJsonRe = RegExp(r'\{[\s\S]+?\}', multiLine: true);
+  // Unique marker so we can pick yt-dlp's --print output out of the rest
+  // of its console noise unambiguously (see _filepathRe below).
+  static const _filepathMarker = 'YTDGUI_FILEPATH::';
+  static final _filepathRe = RegExp('^${RegExp.escape(_filepathMarker)}(.+)\$');
 
   Future<void> downloadItem({
     required DownloadItem item,
     required String outputDir,
     required void Function(DownloadItem updated) onUpdate,
+    required CancelToken cancelToken,
     bool normalize = false,
     double normalizeLufs = -14.0,
     String ffmpegOverride = '',
   }) async {
+    if (cancelToken.cancelled) {
+      _fail(item, 'Canceled', onUpdate);
+      return;
+    }
+
     // Use the user-specified path if set, otherwise rely on PATH
     final ffmpeg = ffmpegOverride.isNotEmpty ? ffmpegOverride : 'ffmpeg';
 
@@ -46,8 +74,15 @@ class DownloadService {
         return;
       }
 
-      // Download best audio in native format — we handle conversion ourselves
-      final outputTemplate = p.join(outputDir, '%(title)s.%(ext)s');
+      // Download best audio to a filename based on the video ID rather than
+      // its title. Video IDs are plain ASCII, so this — and the --print
+      // marker below — sidestep a Windows console encoding bug where
+      // non-ASCII title characters (e.g. the fullwidth "？" yt-dlp
+      // substitutes for "?" in titles) get silently dropped when yt-dlp's
+      // subprocess output is decoded, corrupting any path built from them.
+      // The human-readable title is applied ourselves, in Dart, further
+      // down for the final output filename.
+      final outputTemplate = p.join(outputDir, '%(id)s.%(ext)s');
       final args = [
         '--no-playlist',
         '-f', 'bestaudio',
@@ -55,6 +90,10 @@ class DownloadService {
         '--output', outputTemplate,
         '--newline',
         '--progress',
+        // Have yt-dlp tell us the exact final filename itself (id + real
+        // container extension), instead of us scraping it out of the
+        // human-readable progress log or guessing.
+        '--print', 'after_move:$_filepathMarker%(id)s.%(ext)s',
         item.url,
       ];
 
@@ -64,9 +103,20 @@ class DownloadService {
       String? downloadedPath;
 
       try {
-        final process = await Process.start(ytdlp, args);
+        // Force yt-dlp's Python runtime to emit UTF-8 regardless of the
+        // Windows console code page, and decode as UTF-8 on our end — a
+        // mismatch here silently mangles non-ASCII characters (e.g. a
+        // fullwidth "？" yt-dlp substitutes for "?" in titles), which
+        // corrupts the printed Destination path.
+        final process = await Process.start(ytdlp, args, environment: {
+          'PYTHONUTF8': '1',
+          'PYTHONIOENCODING': 'utf-8',
+        });
+        cancelToken._attach(process);
 
-        process.stdout.transform(const SystemEncoding().decoder).listen((chunk) {
+        process.stdout
+            .transform(const Utf8Decoder(allowMalformed: true))
+            .listen((chunk) {
           item.logBuffer.write(chunk);
           for (final line in chunk.split('\n')) {
             final progress = _progressRe.firstMatch(line);
@@ -77,16 +127,20 @@ class DownloadService {
                 progress: pct / 100.0,
               ));
             }
-            final dest = _destinationRe.firstMatch(line);
+            final dest = _filepathRe.firstMatch(line);
             if (dest != null) downloadedPath = dest.group(1)!.trim();
           }
         });
 
         process.stderr
-            .transform(const SystemEncoding().decoder)
+            .transform(const Utf8Decoder(allowMalformed: true))
             .listen((chunk) => item.logBuffer.write(chunk));
 
         final exitCode = await process.exitCode;
+        if (cancelToken.cancelled) {
+          _fail(item, 'Canceled', onUpdate);
+          return;
+        }
         if (exitCode != 0) {
           _fail(item, 'yt-dlp exited with code $exitCode', onUpdate);
           return;
@@ -96,15 +150,29 @@ class DownloadService {
         return;
       }
 
-      // Fall back to finding the newest audio file if yt-dlp didn't print a path
-      nativeFile = downloadedPath ?? _findLatestAudio(outputDir) ?? '';
-      if (nativeFile.isEmpty || !File(nativeFile).existsSync()) {
+      if (downloadedPath == null) {
+        _fail(item, 'Could not locate downloaded file', onUpdate);
+        return;
+      }
+      // downloadedPath is just "<id>.<ext>" — join with our own outputDir
+      // rather than trusting an absolute path round-tripped through the
+      // subprocess, so this stays correct even if outputDir itself
+      // contains non-ASCII characters.
+      nativeFile = p.join(outputDir, downloadedPath!);
+      if (!File(nativeFile).existsSync()) {
         _fail(item, 'Could not locate downloaded file', onUpdate);
         return;
       }
     }
 
-    final baseName = p.basenameWithoutExtension(nativeFile);
+    // For yt-dlp downloads, name the final file after the (human-readable)
+    // title we already have in Dart, sanitized for Windows ourselves —
+    // rather than round-tripping the title through yt-dlp's own filename
+    // template, which is what triggered the encoding bug above. Local
+    // files just keep their existing filename.
+    final baseName = item.isLocal
+        ? p.basenameWithoutExtension(nativeFile)
+        : _sanitizeFilename(item.title);
     final m4aPath = p.join(outputDir, '$baseName.m4a');
 
     if (normalize) {
@@ -115,16 +183,18 @@ class DownloadService {
       final lufsFilter = 'loudnorm=I=$normalizeLufs:print_format=json';
       String pass1Json = '';
       try {
-        final pass1 = await Process.run(ffmpeg, [
+        final pass1 = await _runCaptured(ffmpeg, [
           '-i', nativeFile,
           '-af', lufsFilter,
           '-vn', '-f', 'null',
           'NUL',
-        ]);
-        // loudnorm prints its JSON to stderr
-        final output = '${pass1.stdout}\n${pass1.stderr}';
-        item.logBuffer.writeln(output);
-        final match = _loudnormJsonRe.firstMatch(output);
+        ], cancelToken);
+        item.logBuffer.writeln(pass1.output);
+        if (cancelToken.cancelled) {
+          _fail(item, 'Canceled', onUpdate);
+          return;
+        }
+        final match = _loudnormJsonRe.firstMatch(pass1.output);
         if (match != null) pass1Json = match.group(0)!;
       } catch (e) {
         _fail(item, 'loudnorm analysis failed: $e', onUpdate);
@@ -157,7 +227,7 @@ class DownloadService {
       onUpdate(item.copyWith(status: DownloadStatus.normalizing, progress: 0.5));
       final applyFilter = 'volume=${gainDb}dB,alimiter=limit=-1dB:level=false';
       try {
-        final pass2 = await Process.run(ffmpeg, [
+        final pass2 = await _runCaptured(ffmpeg, [
           '-i', nativeFile,
           '-vn',
           '-af', applyFilter,
@@ -166,8 +236,12 @@ class DownloadService {
           '-b:a', '256k',
           '-y',
           m4aPath,
-        ]);
-        item.logBuffer.writeln('${pass2.stdout}\n${pass2.stderr}');
+        ], cancelToken);
+        item.logBuffer.writeln(pass2.output);
+        if (cancelToken.cancelled) {
+          _fail(item, 'Canceled', onUpdate);
+          return;
+        }
         if (pass2.exitCode != 0) {
           _fail(item, 'ffmpeg conversion failed (exit ${pass2.exitCode})', onUpdate);
           return;
@@ -181,7 +255,7 @@ class DownloadService {
       onUpdate(item.copyWith(status: DownloadStatus.converting, progress: 0.0));
       item.logBuffer.writeln('\n[convert] Converting to m4a...');
       try {
-        final result = await Process.run(ffmpeg, [
+        final result = await _runCaptured(ffmpeg, [
           '-i', nativeFile,
           '-vn',
           '-ac', '2',
@@ -189,8 +263,12 @@ class DownloadService {
           '-b:a', '256k',
           '-y',
           m4aPath,
-        ]);
-        item.logBuffer.writeln('${result.stdout}\n${result.stderr}');
+        ], cancelToken);
+        item.logBuffer.writeln(result.output);
+        if (cancelToken.cancelled) {
+          _fail(item, 'Canceled', onUpdate);
+          return;
+        }
         if (result.exitCode != 0) {
           _fail(item, 'ffmpeg conversion failed (exit ${result.exitCode})', onUpdate);
           return;
@@ -214,6 +292,22 @@ class DownloadService {
     ));
   }
 
+  /// Runs a process to completion, capturing combined stdout+stderr, while
+  /// registering it with [cancelToken] so it can be killed mid-run.
+  Future<({int exitCode, String output})> _runCaptured(
+      String exe, List<String> args, CancelToken cancelToken) async {
+    final process = await Process.start(exe, args);
+    cancelToken._attach(process);
+    final buf = StringBuffer();
+    final stdoutDone =
+        process.stdout.transform(const SystemEncoding().decoder).forEach(buf.write);
+    final stderrDone =
+        process.stderr.transform(const SystemEncoding().decoder).forEach(buf.write);
+    final exitCode = await process.exitCode;
+    await Future.wait([stdoutDone, stderrDone]);
+    return (exitCode: exitCode, output: buf.toString());
+  }
+
   void _fail(DownloadItem item, String msg, void Function(DownloadItem) onUpdate) {
     item.logBuffer.writeln('\nERROR: $msg');
     onUpdate(item.copyWith(status: DownloadStatus.failed, errorMessage: msg));
@@ -225,18 +319,17 @@ class DownloadService {
     return double.tryParse(match.group(1)!);
   }
 
-  String? _findLatestAudio(String dir) {
-    const exts = {'.webm', '.opus', '.m4a', '.mp4', '.ogg', '.flac', '.wav', '.mp3'};
-    try {
-      final files = Directory(dir)
-          .listSync()
-          .whereType<File>()
-          .where((f) => exts.contains(p.extension(f.path).toLowerCase()))
-          .toList()
-        ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
-      return files.isEmpty ? null : files.first.path;
-    } catch (_) {
-      return null;
+  static final _illegalFilenameChars = RegExp(r'[<>:"/\\|?*\x00-\x1F]');
+
+  /// Makes a title safe to use as a Windows filename. Unlike yt-dlp's own
+  /// sanitization (which round-trips through a subprocess and can mangle
+  /// non-ASCII substitutions), this runs entirely in Dart on the title text
+  /// we already have.
+  String _sanitizeFilename(String title) {
+    var name = title.replaceAll(_illegalFilenameChars, '_').trim();
+    while (name.isNotEmpty && (name.endsWith('.') || name.endsWith(' '))) {
+      name = name.substring(0, name.length - 1);
     }
+    return name.isEmpty ? 'download' : name;
   }
 }

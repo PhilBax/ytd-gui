@@ -93,6 +93,10 @@ final downloadsProvider =
 class DownloadsNotifier extends Notifier<List<DownloadItem>> {
   static const _maxConsecutiveFailures = 3;
 
+  bool _draining = false;
+  bool _stopRequested = false;
+  CancelToken? _activeCancelToken;
+
   @override
   List<DownloadItem> build() => [];
 
@@ -117,10 +121,11 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
       );
     }).toList();
 
-    await _processQueue(newItems);
+    state = [...state, ...newItems];
+    _startDrain();
   }
 
-  Future<void> enqueueLocalFiles(List<String> paths) async {
+  void enqueueLocalFiles(List<String> paths) {
     final newItems = paths.map((path) {
       return DownloadItem(
         id: '${DateTime.now().microsecondsSinceEpoch}_${path.hashCode}',
@@ -130,20 +135,27 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
       );
     }).toList();
 
-    await _processQueue(newItems);
+    state = [...state, ...newItems];
+    _startDrain();
   }
 
-  Future<void> _processQueue(List<DownloadItem> newItems) async {
+  /// Kicks off the background drain loop if one isn't already running.
+  /// Safe to call any time — new items just get picked up by the loop
+  /// that's already in flight.
+  void _startDrain() {
+    if (_draining) return;
+    _draining = true;
+    _drainLoop();
+  }
+
+  Future<void> _drainLoop() async {
     final downloadService = ref.read(downloadServiceProvider);
-    final settingsAsync = ref.read(settingsProvider);
-    final settings = settingsAsync.valueOrNull;
-    final outputDir = settings?.downloadDir ?? '.';
-
-    state = [...state, ...newItems];
-
     int consecutiveFailures = 0;
 
-    for (final item in newItems) {
+    while (true) {
+      final next = _nextQueued();
+      if (next == null) break;
+
       if (consecutiveFailures >= _maxConsecutiveFailures) {
         // Mark remaining queued items as failed
         for (final remaining in state
@@ -156,57 +168,69 @@ class DownloadsNotifier extends Notifier<List<DownloadItem>> {
         break;
       }
 
-      final current = state.firstWhere(
-        (i) => i.id == item.id,
-        // Item was removed from the queue (e.g. via clearQueued) — treat
-        // it as not-queued so it gets skipped below.
-        orElse: () => item.copyWith(status: DownloadStatus.failed),
-      );
-      if (current.status != DownloadStatus.queued) continue;
+      final settings = ref.read(settingsProvider).valueOrNull;
+      final outputDir = settings?.downloadDir ?? '.';
+      final cancelToken = CancelToken();
+      _activeCancelToken = cancelToken;
 
       await downloadService.downloadItem(
-        item: current,
+        item: next,
         outputDir: outputDir,
         normalize: settings?.normalize ?? false,
         normalizeLufs: settings?.normalizeLufs ?? -14.0,
         ffmpegOverride: settings?.ffmpegOverride ?? '',
-        onUpdate: (updated) {
-          _update(updated);
-        },
+        cancelToken: cancelToken,
+        onUpdate: _update,
       );
 
-      final finished = state.firstWhere((i) => i.id == item.id);
+      _activeCancelToken = null;
+
+      // Stop leaves the rest of the queue untouched, ready for Resume.
+      if (_stopRequested) {
+        _stopRequested = false;
+        break;
+      }
+
+      final finished = state.firstWhere((i) => i.id == next.id, orElse: () => next);
       if (finished.status == DownloadStatus.failed) {
         consecutiveFailures++;
       } else {
         consecutiveFailures = 0;
       }
     }
+
+    _draining = false;
   }
 
-  Future<void> retry(String itemId) async {
-    final item = state.firstWhere((i) => i.id == itemId);
-    final downloadService = ref.read(downloadServiceProvider);
-    final settings = ref.read(settingsProvider).valueOrNull;
-    final outputDir = settings?.downloadDir ?? '.';
+  DownloadItem? _nextQueued() {
+    for (final item in state) {
+      if (item.status == DownloadStatus.queued) return item;
+    }
+    return null;
+  }
 
+  /// Cancels whatever is currently downloading/converting/normalizing. The
+  /// active item is marked failed with "Canceled"; remaining queued items
+  /// are left alone so Resume can pick them back up.
+  void stop() {
+    if (_activeCancelToken == null) return;
+    _stopRequested = true;
+    _activeCancelToken!.cancel();
+  }
+
+  /// Resumes processing of whatever is still queued. Does not retry
+  /// failed/canceled items — only items still in the "queued" state.
+  void resume() => _startDrain();
+
+  void retry(String itemId) {
+    final item = state.firstWhere((i) => i.id == itemId);
     _update(item.copyWith(
       status: DownloadStatus.queued,
       progress: 0,
       errorMessage: null,
       retryCount: item.retryCount + 1,
     ));
-
-    final updated = state.firstWhere((i) => i.id == itemId);
-    final settings2 = ref.read(settingsProvider).valueOrNull;
-    await downloadService.downloadItem(
-      item: updated,
-      outputDir: outputDir,
-      normalize: settings2?.normalize ?? false,
-      normalizeLufs: settings2?.normalizeLufs ?? -14.0,
-      ffmpegOverride: settings2?.ffmpegOverride ?? '',
-      onUpdate: _update,
-    );
+    _startDrain();
   }
 
   void clear() {
